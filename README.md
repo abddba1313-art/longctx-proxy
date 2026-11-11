@@ -1,3 +1,5 @@
+<p align="center"><sub><b>English</b> · <a href="docs/README.zh-CN.md">简体中文</a></sub></p>
+
 # longctx-proxy
 
 **A cache-aware context-compression proxy for OpenAI-compatible clients.**
@@ -5,8 +7,6 @@
 It sits between your chat client (Cherry Studio, or any OpenAI-compatible app) and any LLM API, compresses long conversations so they fit the model's window — **without breaking the prefix/KV cache**, and with **continuous measurement of what the model still remembers**.
 
 GUI 5.1.0 · proxy 3.36 · Python 3.10+ · Windows-first · Apache-2.0
-
-[中文说明](docs/README.zh-CN.md)
 
 ---
 
