@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Build artifacts
+build/
+dist/
+*.exe
+*.spec.bak
+
+# Runtime config (contains API keys — never commit)
+profiles.json
+targets.json
+pricing.json
+routing.json
+thinking.json
+baselines.json
+python_path.txt
+*.env
+
+# Runtime data (conversations, stats, logs)
+app/
+sessions/
+dumps/
+cache/
+exports/
+chat_archive/
+kpi.jsonl*
+proxy.log
+proxy-stats.json
+gui.lock
+*.zip
+
+# OS / editor
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/

@@ -1,0 +1,4 @@
+# Proxy core: stdlib http.server; httpx is used for upstream calls & digests.
+httpx>=0.27
+# Optional: exact token counting; without it, counts fall back to char estimates.
+tiktoken>=0.7
