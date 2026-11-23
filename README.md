@@ -6,7 +6,7 @@
 
 It sits between your chat client (Cherry Studio, or any OpenAI-compatible app) and any LLM API, compresses long conversations so they fit the model's window — **without breaking the prefix/KV cache**, and with **continuous measurement of what the model still remembers**.
 
-GUI 5.1.0 · proxy 3.36 · Python 3.10+ · Windows-first · Apache-2.0
+GUI 5.1.2 · proxy 3.41 · Python 3.10+ · Windows-first · Apache-2.0
 
 ---
 

@@ -58,7 +58,7 @@ messagebox = _TranslatingBox()
 LISTEN_HOST = "127.0.0.1"
 LISTEN_PORT = 8082
 DEFAULT_LISTEN = f"{LISTEN_HOST}:{LISTEN_PORT}"
-APP_VERSION = "5.1.0"
+APP_VERSION = "5.1.2"
 DEFAULT_THRESHOLD = 14000
 DEFAULT_RATIO = 0.50  # v2.0 实测最佳中心值；自适应区间为 ±0.10
 # 格子限幅 0.50~0.75：超过 0.75 时 proxy.py 的 DENSITY_MIN 会大于 DENSITY_MAX，
@@ -393,6 +393,19 @@ def proxy_stats() -> dict:
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
+
+
+def rb_full_conv(short: str) -> str:
+    """5.1.1：实况表第一列是 8 位显示截断键（ctx_rows 的 key[:8]），
+    回滚定位 snap 目录必须用 16 位全键，否则目录永远拼不中、下拉恒空。
+    用 stats 的全键表把前缀还原；还原不到原样返回（宁可空也不猜）。"""
+    if not short or len(short) >= 16:
+        return short
+    for c in (proxy_stats().get("conversations") or []):
+        k = str(c.get("key", ""))
+        if k.startswith(short):
+            return k
+    return short
 
 
 def _fmt_tok(n) -> str:
@@ -4946,18 +4959,25 @@ class App:
             self._rb_refresh()
 
     def _rb_conv_now(self) -> str:
-        """回滚目标会话：KPI 过滤的那条；没选则实况表第一行（最新）。"""
+        """回滚目标会话：KPI 过滤的那条；没选则实况表第一行（最新）。
+        5.1.1：实况表第一列是 8 位显示截断键，必须经 rb_full_conv 还原全键，
+        否则 snap 目录永远拼不中、下拉恒空。"""
         if self.kpi_conv:
-            return self.kpi_conv
-        kids = self.ctx_tree.get_children()
+            return rb_full_conv(self.kpi_conv)
+        tree = getattr(self, "ctx_tree", None)
+        kids = tree.get_children() if tree is not None else []
         if kids:
-            vals = self.ctx_tree.item(kids[0], values=())
+            vals = tree.item(kids[0], values=())
             if vals and vals[0]:
-                return str(vals[0])
+                return rb_full_conv(str(vals[0]))
+        # 5.1.2：实况表空/未建时直接取 stats 第一条全键兜底，下拉不再依赖树灌成功
+        convs = proxy_stats().get("conversations") or []
+        if convs and convs[0].get("key"):
+            return rb_full_conv(str(convs[0]["key"]))
         return ""
 
     def _rb_snap_times(self, conv: str) -> list[str]:
-        d = sess_dir() / conv / "snap"
+        d = _sess_dir() / conv / "snap"
         day = time.strftime("%Y-%m-%d")
         out = []
         try:
@@ -5004,7 +5024,7 @@ class App:
         cmd = {"conv": conv, "as_of": as_of, "status": "pending",
                "nonce": int(time.time())}
         try:
-            p = sess_dir() / "cache_cmd.json"
+            p = _sess_dir() / "cache_cmd.json"
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(json.dumps(cmd, ensure_ascii=False), encoding="utf-8")
         except OSError as exc:
@@ -5200,17 +5220,28 @@ class App:
         读的是 proxy.py 每轮落盘的 proxy-stats.json——代理子进程崩了也不影响
         本方法，最多停在最后一次记录。updated 没变就不重灌表，避免闪烁。
         """
+        # 5.1.2：三段各自隔离。旧版一个 try 包到底：ctx_live/树任何一次异常
+        # 都会先置 _ctx_sig 再抛 → 后续 tick 永久早退 → 实况表与回滚下拉恒空。
+        # 现在树失败不连累回滚，回滚每 tick 必刷（下拉不再依赖树灌成功）。
         try:
             stats = proxy_stats()
+        except Exception:
+            return
+        try:
             self.ctx_live.configure(text=ctx_live_text(stats))
-            updated = stats.get("updated")
-            if updated == self._ctx_sig:
-                return
+        except Exception:
+            pass
+        updated = stats.get("updated")
+        if updated != self._ctx_sig:
             self._ctx_sig = updated
-            tree = self.ctx_tree
-            tree.delete(*tree.get_children())
-            for row in ctx_rows(stats):
-                tree.insert("", "end", values=row)
+            try:
+                tree = self.ctx_tree
+                tree.delete(*tree.get_children())
+                for row in ctx_rows(stats):
+                    tree.insert("", "end", values=row)
+            except Exception:
+                pass
+        try:
             self._rb_refresh(stats)
         except Exception:
             pass

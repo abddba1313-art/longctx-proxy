@@ -1851,7 +1851,13 @@ def test_atomic_write():
 
 def test_drop_only_policy():
     """3.10：只丢不摘——超预算整条丢弃最旧原文，保留消息一字不改、不出摘要。"""
+    import shutil
+    import tempfile
     old = proxy.DROP_ONLY
+    old_pf = (proxy.PREFIX_DIR, dict(proxy._prefix_mem))
+    d = Path(tempfile.mkdtemp(prefix="drop310-"))
+    proxy.PREFIX_DIR = d / "prefix"      # 3.38：水位会落盘，测试不许碰线上前缀目录
+    proxy._prefix_mem.clear()
     proxy.DROP_ONLY = 1
     try:
         big = "配置项说明文本。" * 4000
@@ -1872,12 +1878,22 @@ def test_drop_only_policy():
               all("[长上下文压缩摘要]" not in str(c) for c in kept))
     finally:
         proxy.DROP_ONLY = old
+        proxy.PREFIX_DIR, mem = old_pf
+        proxy._prefix_mem.clear()
+        proxy._prefix_mem.update(mem)
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def test_cold_probe_register():
     """3.13 ①：只丢不摘丢弃旧消息时，逐字标识符入冷存表（限量、滤纯数字）。"""
     import re as _re
+    import shutil
+    import tempfile
     saved = (proxy.DROP_ONLY, proxy.COLD_PROBE, proxy.COLD_PICK, proxy.COLD_MAX)
+    old_pf = (proxy.PREFIX_DIR, dict(proxy._prefix_mem))
+    d = Path(tempfile.mkdtemp(prefix="cold313-"))
+    proxy.PREFIX_DIR = d / "prefix"      # 3.38：否则上一轮的水位会被重放，本轮不再丢
+    proxy._prefix_mem.clear()
     proxy._COLD.clear()
     proxy.DROP_ONLY, proxy.COLD_PROBE = 1, True
     proxy.COLD_PICK, proxy.COLD_MAX = 4, 20
@@ -1905,7 +1921,11 @@ def test_cold_probe_register():
     finally:
         (proxy.DROP_ONLY, proxy.COLD_PROBE,
          proxy.COLD_PICK, proxy.COLD_MAX) = saved
+        proxy.PREFIX_DIR, mem = old_pf
+        proxy._prefix_mem.clear()
+        proxy._prefix_mem.update(mem)
         proxy._COLD.clear()
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def test_cold_probe_reanchor_lost():
@@ -2422,9 +2442,9 @@ def test_kpi_time_axis():
     check("轴带 18px（曲线区压到 hp）", "hp = h - 18" in msrc, "missing")
     check("刻度接线：_update_kpi 调用刻度函数",
           "_kpi_time_ticks(rows, w)" in msrc, "missing")
-    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.0"' in msrc, "missing")
+    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.2"' in msrc, "missing")
     check("代理已动（PROXY_VERSION=3.34，版本双查）",
-          'PROXY_VERSION = "3.36"' in
+          'PROXY_VERSION = "3.41"' in
           (HERE / "proxy" / "proxy.py").read_text(encoding="utf-8"),
           "proxy 版本漂移")
 
@@ -2492,9 +2512,9 @@ def test_kpi_line_styles():
           'wraplength=max(200, e.width - 6)' in msrc
           and 'self.lbl_kpi_note.bind(\n            "<Configure>"' in msrc,
           "missing")
-    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.0"' in msrc, "missing")
+    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.2"' in msrc, "missing")
     check("代理已动（PROXY_VERSION=3.34，版本双查）",
-          'PROXY_VERSION = "3.36"' in
+          'PROXY_VERSION = "3.41"' in
           (HERE / "proxy" / "proxy.py").read_text(encoding="utf-8"),
           "proxy 版本漂移")
 
@@ -2524,7 +2544,7 @@ def test_kpi_entry_layout():
           and "云端任务模型列表" not in msrc, "still old")
     check("i18n 键同步", (p.parent / "i18n.py").read_text(encoding="utf-8")
           .count("云端任务模型") == 0, "i18n 漏改")
-    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.0"' in msrc, "missing")
+    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.2"' in msrc, "missing")
     # 行为级：真建界面量输入框——3.17/3.17.1 在这里 mapped=0/宽 1px，必红
     if mod and hasattr(mod, "build_root"):
         try:
@@ -2568,7 +2588,7 @@ def test_kpi_scale_p95():
           "_kpi_scale([v for v in er + ma if v is not None])" in msrc
           and "(base or 0.0) * 2" in msrc, "missing")
     check("旧 max 量程已撤", "hi = max(0.25, max(er + ma))" not in msrc, "still there")
-    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.0"' in msrc, "missing")
+    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.2"' in msrc, "missing")
 
 
 def test_kpi_popup_edge():
@@ -2596,7 +2616,7 @@ def test_kpi_popup_edge():
           "改小一档" in msrc and "知识库" in msrc and ".md" in msrc, "missing")
     check("弹窗标题=降档建议", 'showinfo(\n                    "降档建议"' in msrc
           or '"降档建议"' in msrc, "missing")
-    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.0"' in msrc, "missing")
+    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.2"' in msrc, "missing")
 
 
 def test_kpi_export_md():
@@ -2658,7 +2678,7 @@ def test_kpi_export_md():
           '"exports"' in msrc and "已导出" in msrc, "missing")
     check("本会话=过滤优先否则最新行",
           "_current_conv_live" in msrc and "kpi_conv" in msrc, "missing")
-    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.0"' in msrc, "missing")
+    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.2"' in msrc, "missing")
 
 
 def test_task_mode_monitor():
@@ -2694,7 +2714,7 @@ def test_task_mode_monitor():
     check("monitor 已进提示表", "monitor" in proxy.TASK_MODE_HINTS)
     psrc = (HERE / "proxy" / "proxy.py").read_text(encoding="utf-8")
     check("PROXY_VERSION=3.34（代理本次动了）",
-          'PROXY_VERSION = "3.36"' in psrc, "missing")
+          'PROXY_VERSION = "3.41"' in psrc, "missing")
     check("monitor 短路在 transform 入口（摘要判定之前）",
           'if TASK_MODE == "monitor":' in psrc
           and psrc.index('if TASK_MODE == "monitor":')
@@ -2723,7 +2743,7 @@ def test_task_mode_monitor():
     check("KPI 面板接线 monitor 暂停",
           'proxy_stats().get("task_mode") == "monitor"' in msrc
           and "已暂停" in msrc, "missing")
-    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.0"' in msrc, "missing")
+    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.2"' in msrc, "missing")
 
 
 def test_task_mode_record():
@@ -2800,7 +2820,7 @@ def test_task_mode_record():
           < psrc.index("_maybe_checkpoint_reset(body, tag, final"), "order")
     check("record 已进提示表", "record" in proxy.TASK_MODE_HINTS)
     check("PROXY_VERSION=3.34（代理本次动了）",
-          'PROXY_VERSION = "3.36"' in psrc, "missing")
+          'PROXY_VERSION = "3.41"' in psrc, "missing")
     tm = getattr(mod, "TASK_MODES", {}) if mod else {}
     check("GUI 下拉有上下文调制监测档",
           "record" in tm and tm["record"][0] == "上下文调制监测", str(list(tm)))
@@ -2819,7 +2839,7 @@ def test_task_mode_record():
         msrc = p.read_text(encoding="utf-8")
     except Exception:
         pass
-    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.0"' in msrc, "missing")
+    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.2"' in msrc, "missing")
 
 
 def _font_of(widget):
@@ -2864,7 +2884,7 @@ def test_task_mode_text_visible():
           "self.lbl_task_hint.grid(row=r, column=0, columnspan=2" in msrc, "missing")
     check("说明折行宽度跟真实宽走",
           "wraplength=max(160, e.width - 4)" in msrc, "missing")
-    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.0"' in msrc, "missing")
+    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.2"' in msrc, "missing")
     if mod and hasattr(mod, "build_root"):
         try:
             root = mod.build_root()
@@ -3009,8 +3029,8 @@ def test_kpi_model_baseline():
         check("代理 kpi 行带实际转发模型名",
               '"model": str(data.get("model") or "")' in psrc, "missing")
         check("PROXY_VERSION=3.34（代理动了 kpi 字段）",
-              'PROXY_VERSION = "3.36"' in psrc, "missing")
-        check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.0"' in msrc, "missing")
+              'PROXY_VERSION = "3.41"' in psrc, "missing")
+        check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.2"' in msrc, "missing")
     finally:
         mod.proxy_dir = old_pd
 
@@ -3054,7 +3074,7 @@ def test_kpi_green_selfview():
     check("旧 gname 硬编码已删（口径名由 kpi_green_series 给出）",
           'gname = "探针存活重心" if metric == "probe"' not in msrc, "还在")
     check("图例已写明自显语义", "没有基线时绿线照常画" in msrc, "missing")
-    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.0"' in msrc, "missing")
+    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.2"' in msrc, "missing")
 
 
 def test_baseline_pick_on_switch():
@@ -3104,7 +3124,7 @@ def test_baseline_pick_on_switch():
     check("候选只挑有 base 的台账行",
           'isinstance(e, dict) and e.get("base") is not None' in msrc, "missing")
     check("图例写明换模型可挑线", "选某个组＝共用那组的基线" in msrc, "missing")
-    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.0"' in msrc, "missing")
+    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.2"' in msrc, "missing")
 
 
 def test_kpi_axis_cleanup():
@@ -3144,7 +3164,7 @@ def test_kpi_axis_cleanup():
     check("灰线右端标数值（3.24 抽成 _kpi_draw_base_label）",
           "_kpi_draw_base_label(cv, w, yb, base)" in msrc, "missing")
     check("图例改为纵轴语义", "共用一个百分比刻度" in msrc, "missing")
-    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.0"' in msrc, "missing")
+    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.2"' in msrc, "missing")
 
 
 def test_kpi_clear_and_gate():
@@ -3180,7 +3200,7 @@ def test_kpi_clear_and_gate():
     check("图例写明绿线永久回声口径",
           "绿线＝回声重心" in msrc, "missing")
     check("图例写明基线下拉可反悔", "「基线」下拉＝只决定灰线" in msrc, "missing")
-    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.0"' in msrc, "missing")
+    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.2"' in msrc, "missing")
 
 
 def test_kpi_axis_draw_324():
@@ -3250,7 +3270,7 @@ def test_kpi_axis_draw_324():
         root.destroy()
     except Exception as exc:
         check("ScrollColumn 行为可用", False, f"{type(exc).__name__}: {exc}")
-    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.0"' in msrc, "missing")
+    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.2"' in msrc, "missing")
 
 
 def test_kpi_chart_snapshots_325():
@@ -3323,7 +3343,7 @@ def test_kpi_chart_snapshots_325():
     check("4.2.0 起线图/基线存档入口全部收起（无残留清洗代码）",
           '"/" if c in' not in msrc and '"·" if c in' not in msrc, "still there")
     check("图例写明每模型一张图", "每模型一张图" in msrc, "missing")
-    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.0"' in msrc, "missing")
+    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.2"' in msrc, "missing")
 
 
 def test_kpi_buttons_visible_326():
@@ -3361,7 +3381,7 @@ def test_kpi_buttons_visible_326():
             check("基线下拉可见且在栏内", combo_ok, "")
         except Exception as exc:
             check("KPI 按钮可见性（Tk 构建）", False, repr(exc))
-    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.0"' in msrc, "missing")
+    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.2"' in msrc, "missing")
 
 
 def test_old_bucket_rename_327():
@@ -3377,7 +3397,7 @@ def test_old_bucket_rename_327():
         check("无 model 行归到新名",
               mod.kpi_model_of({"t": "13:00"}) == "qwen3.8 flash历史统计数据", "")
     check("文字行文案同步", "历史统计档（qwen3.8-flash 早期数据）" in msrc, "missing")
-    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.0"' in msrc, "missing")
+    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.2"' in msrc, "missing")
 
 
 def test_baseline_degenerate():
@@ -3429,7 +3449,7 @@ def test_baseline_degenerate():
           "g != BASELINE_SELF and baseline_entry_valid(e)" in msrc, "missing")
     check("接线：更新基线按模型选择（不再有混组平均）",
           "用哪款模型的全部有效数据生成新基线" in msrc, "missing")
-    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.0"' in msrc, "missing")
+    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.2"' in msrc, "missing")
 
 
 def test_baseline_bg_collect():
@@ -3476,9 +3496,9 @@ def test_baseline_bg_collect():
         m3, b3, n3, note3 = mod.baseline_pick(rows10)
         check("4.0.2 n<20 不足话术不带空括号",
               m3 is None and "（）" not in note3 and "不足" in note3, str(note3))
-    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.0"' in msrc, "missing")
+    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.2"' in msrc, "missing")
     check("代理已动（PROXY_VERSION 仍 3.31，版本双查）",
-          'PROXY_VERSION = "3.36"' in
+          'PROXY_VERSION = "3.41"' in
           (HERE / "proxy" / "proxy.py").read_text(encoding="utf-8"),
           "proxy 版本漂移")
 
@@ -3527,7 +3547,7 @@ def test_kpi_range_and_model():
           "「线图时间范围」＝绿线看哪段时间" in msrc, "missing")
     check("文字行标出时间范围",
           "· 时间范围 {_kpi_range_label(win_sec)}" in msrc, "missing")
-    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.0"' in msrc, "missing")
+    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.2"' in msrc, "missing")
 
 
 def test_baseline_update_model():
@@ -3571,7 +3591,7 @@ def test_baseline_update_model():
     check("覆盖写 manual 条目并记来源模型",
           '"from_model": model' in msrc and '"src": "manual"' in msrc,
           "missing")
-    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.0"' in msrc, "missing")
+    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.2"' in msrc, "missing")
 
 
 def test_thinking_override():
@@ -3738,9 +3758,12 @@ def test_drop_fold_corrections_332():
     import tempfile
     import shutil
     old_drop, old_sess = proxy.DROP_ONLY, proxy.SESS_DIR
+    old_pf = (proxy.PREFIX_DIR, dict(proxy._prefix_mem))
     proxy.DROP_ONLY = 1
     tmp = Path(tempfile.mkdtemp(prefix="ck332_"))
     proxy.SESS_DIR = tmp
+    proxy.PREFIX_DIR = tmp / "prefix"    # 3.38：水位落盘隔离，重跑不自我重放
+    proxy._prefix_mem.clear()
     key = ""
     try:
         big = "配置项说明文本。" * 4000
@@ -3767,6 +3790,9 @@ def test_drop_fold_corrections_332():
               proxy._DROP_LAST.get(key, 0) > 0, str(proxy._DROP_LAST.get(key)))
     finally:
         proxy.DROP_ONLY, proxy.SESS_DIR = old_drop, old_sess
+        proxy.PREFIX_DIR, mem = old_pf
+        proxy._prefix_mem.clear()
+        proxy._prefix_mem.update(mem)
         proxy._DROP_LAST.pop(key, None)
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -4175,9 +4201,18 @@ def test_drop_fold_wiring_335():
     import shutil
     import tempfile
     old = (proxy.SESS_DIR, proxy.LOG_PATH, proxy.THRESHOLD, proxy.DROP_ONLY)
+    old_pf = (proxy.PREFIX_DIR, dict(proxy._prefix_mem))
+    # 3.38 起显式钉死这几个旋钮：本用例过去靠别处泄漏的 TARGET_MSG/
+    # LAZY_COMPRESS/HOT_TOKENS 碰巧通过（基线日志 budget=4096、gate=500、无热层）。
+    old_knobs = (proxy.LAZY_COMPRESS, proxy.TARGET_MSG, proxy.HOT_MSGS,
+                 proxy.HOT_TOKENS)
     d = Path(tempfile.mkdtemp(prefix="evw335-"))
     proxy.SESS_DIR, proxy.LOG_PATH = d, d / "proxy.log"
+    proxy.PREFIX_DIR = d / "prefix"      # 3.38：水位落盘隔离，重跑不自我重放
+    proxy._prefix_mem.clear()
     proxy.THRESHOLD, proxy.DROP_ONLY = 500, True
+    proxy.LAZY_COMPRESS, proxy.TARGET_MSG = False, 200   # budget 落到 4096 地板
+    proxy.HOT_MSGS, proxy.HOT_TOKENS = 0, 0              # 无热层，旧消息可丢
     try:
         big = "搜索摘要：直录比例阈值 15% 自 2026 年生效。" * 400
         body = {"model": "m", "messages": [
@@ -4206,6 +4241,11 @@ def test_drop_fold_wiring_335():
     finally:
         (proxy.SESS_DIR, proxy.LOG_PATH, proxy.THRESHOLD,
          proxy.DROP_ONLY) = old
+        (proxy.LAZY_COMPRESS, proxy.TARGET_MSG, proxy.HOT_MSGS,
+         proxy.HOT_TOKENS) = old_knobs
+        proxy.PREFIX_DIR, mem = old_pf
+        proxy._prefix_mem.clear()
+        proxy._prefix_mem.update(mem)
         shutil.rmtree(d, ignore_errors=True)
 
 
@@ -4299,7 +4339,374 @@ def test_gui_cache_button_336():
           mod.rb_norm_time("abc") == "" and mod.rb_norm_time("25:00") == "")
     check("备注走 i18n", "只对下一次对话生效" in
           (p.parent / "i18n.py").read_text(encoding="utf-8"))
-    check("APP_VERSION=5.0.9", 'APP_VERSION = "5.1.0"' in msrc, "missing")
+    check("APP_VERSION=5.0.9", 'APP_VERSION = "5.1.2"' in msrc, "missing")
+
+
+def test_dump_hook_337():
+    """3.37：出站字节取证开关——设了才 dump，默认空=关，不碰线上行为。"""
+    psrc = (HERE / "proxy" / "proxy.py").read_text(encoding="utf-8")
+    check("开关默认空", 'DUMP_DIR = _env("PROXY_DUMP_DIR", "")' in psrc)
+    check("设开关且有会话才 dump",
+          "if DUMP_DIR and ckey:" in psrc and "_dump_outbound(ckey, body)" in psrc)
+    check("dump 写的是出站原字节", ".write_bytes(body)" in psrc)
+    check("PROXY_VERSION=3.37", 'PROXY_VERSION = "3.41"' in psrc, "missing")
+
+
+def test_cut_replay_338():
+    """3.38 故障修：压缩轮的前缀不再轮轮改写。
+
+    两处故障，都跟丢弃深度/触发线无关（那两项归 GUI 的建议上下文）：
+      ① 只丢不摘每轮按当轮总量重算，水位随历史增长往前漂（实测连续七轮
+         179→181→183→185→187→189→191 条），头部第一条轮轮不同 → 云端隐式
+         缓存在压缩轮只命中工具定义那段（23040/24640）。修：水位记进前缀
+         记录，下一轮逐字重放同一批删除。
+      ② 边界 keep_from 每轮恒退 1，而连带 tool 结果一次删 2~3 条，热层被
+         逐步吃穿（实测一轮删到只剩 1 条，最新对话一起没了）。
+    有牙核验：改前 _save_prefix 没有 cut 字段、存的是丢弃前的键表，
+    keep_from -= 1；两轮的头部字节对不上，最新那条 user 会被删掉。
+    """
+    import json
+    import shutil
+    import tempfile
+    psrc = (HERE / "proxy" / "proxy.py").read_text(encoding="utf-8")
+    check("PROXY_VERSION=3.38", 'PROXY_VERSION = "3.41"' in psrc, "missing")
+    check("水位重放开关默认开（PROXY_PREFIX_CUT=0 翻案）",
+          'CUT_REPLAY = _env("PROXY_PREFIX_CUT", "1") == "1"' in psrc)
+    check("边界按实际删除条数退", "keep_from = max(0, keep_from - removed)" in psrc
+          and "keep_from -= 1" not in psrc)
+    check("前缀记录存 cut + 丢弃后的键表",
+          '"cut": list(getattr(_cut_local, "keys"' in psrc
+          and "final_keys=alive_keys" in psrc)
+
+    saved = (proxy.SESS_DIR, proxy.LOG_PATH, proxy.PREFIX_DIR, proxy.THRESHOLD,
+             proxy.DROP_ONLY, proxy.PREFIX_STRICT, proxy.CHECKPOINT,
+             proxy.HOT_MSGS, proxy.HOT_TOKENS, proxy.LAZY_COMPRESS,
+             proxy.CONTEXT, proxy.WORK_WINDOW, proxy.RESERVE, proxy.TARGET_MSG,
+             proxy.MIN_MSG, proxy.LOW_MSG, proxy.REPEAT_DEDUPE, proxy.L2_FOLD,
+             proxy.COLD_PROBE, proxy.get_summary, proxy._calib, proxy.TASK_MODE)
+    old_mem = dict(proxy._prefix_mem)
+    d = Path(tempfile.mkdtemp(prefix="cut338-"))
+    proxy.SESS_DIR, proxy.LOG_PATH = d, d / "proxy.log"
+    proxy.PREFIX_DIR = d / "prefix"
+    proxy.TASK_MODE, proxy.THRESHOLD = "auto", 200
+    proxy.DROP_ONLY, proxy.PREFIX_STRICT, proxy.CHECKPOINT = 1, True, False
+    proxy.HOT_MSGS, proxy.HOT_TOKENS = 2, 0     # 最新 2 条是热层
+    proxy.LAZY_COMPRESS = False                  # 走 THRESHOLD 分支
+    # budget = min(hard, 14000) = 14000，丢弃线 = 11900
+    proxy.CONTEXT, proxy.WORK_WINDOW, proxy.RESERVE = 100000, 100000, 12000
+    proxy.TARGET_MSG = 0
+    proxy.MIN_MSG, proxy.LOW_MSG = 10 ** 9, 10 ** 9   # 摘要梯队不许插手
+    proxy.REPEAT_DEDUPE, proxy.L2_FOLD, proxy.COLD_PROBE = False, False, False
+    proxy.get_summary = lambda *a, **k: "摘要"
+    proxy._calib = lambda key: 1.0
+    proxy._prefix_mem.clear()
+    try:
+        unit = "资料正文直录比例阈值百分之二十二。"
+        per = max(1, proxy.count_tokens(unit))
+
+        def pad(label, tok):
+            return f"{label}：" + unit * max(1, tok // per)
+
+        def hist(tag_word, old_tool_tok, new_u_tok, new_a_tok):
+            ms = [{"role": "system", "content": f"你是助手（{tag_word}）。"}]
+            for i in range(3):
+                ms.append({"role": "user", "content": pad(f"旧问题{i}", 300)})
+                ms.append({"role": "assistant", "content": "",
+                           "tool_calls": [{"id": f"c{i}", "type": "function",
+                                           "function": {"name": "web_search",
+                                                        "arguments": "{}"}}]})
+                ms.append({"role": "tool", "tool_call_id": f"c{i}",
+                           "content": pad(f"旧工具结果{i}", old_tool_tok)})
+            ms.append({"role": "user", "content": pad("最新问题", new_u_tok)})
+            ms.append({"role": "assistant", "content": pad("最新回答", new_a_tok)})
+            return ms
+
+        # 场景 A：热层合计约 13000 > 丢弃线 11900 —— 旧消息删光仍超线。
+        # 边界若被吃穿（改前 keep_from 恒退 1），下一条受害者就是最新的 user。
+        ha = hist("A", 2000, 8000, 5000)
+        n_before = len(ha)
+        proxy.transform({"model": "m", "messages": ha}, "a1")
+        check("A 第一轮确实丢了旧消息", len(ha) < n_before,
+              f"{n_before} -> {len(ha)}")
+        check("A 热层不被吃穿：最新两条原文保住",
+              ha[-1]["content"].startswith("最新回答")
+              and ha[-2]["content"].startswith("最新问题"),
+              str([m.get("content", "")[:12] for m in ha[-2:]]))
+
+        # 场景 B：旧区够大，丢到丢弃线以内就停（建议上下文是软线，越界可以，
+        # 但这里让它停在线内）。第二轮客户端原样重发被丢的旧消息 + 追加尾巴，
+        # 重放后不应再丢，头部必须与第一轮逐字相同——云端前缀缓存的前提。
+        hb = hist("B", 4000, 6000, 4000)
+        key_b = proxy.conversation_key(hb)
+        n_before = len(hb)
+        proxy.transform({"model": "m", "messages": hb}, "b1")
+        out1 = [json.dumps(m, ensure_ascii=False, sort_keys=True) for m in hb]
+        check("B 第一轮丢了旧消息", len(hb) < n_before, f"{n_before} -> {len(hb)}")
+        rec = proxy.PREFIX_DIR / f"{key_b}.json"
+        data = json.loads(rec.read_text(encoding="utf-8"))
+        check("B 丢弃水位写进前缀记录", bool(data.get("cut")),
+              str(data.get("cut"))[:120])
+        check("B 键表存的是丢弃后那份",
+              len(data.get("keys") or []) == len(hb),
+              f"{len(data.get('keys') or [])} vs {len(hb)}")
+
+        hb2 = hist("B", 4000, 6000, 4000) + [
+            {"role": "user", "content": "追问：哪一年生效？"},
+            {"role": "assistant", "content": "2026 年。"}]
+        proxy.transform({"model": "m", "messages": hb2}, "b2")
+        out2 = [json.dumps(m, ensure_ascii=False, sort_keys=True) for m in hb2]
+        txt = (d / "proxy.log").read_text(encoding="utf-8")
+        check("B 第二轮重放同一批删除", "丢弃水位重放" in txt)
+        check("B 第二轮头部与第一轮逐字相同（前缀不再改写）",
+              out2[:len(out1)] == out1, f"{len(out1)} vs {len(out2)}")
+        check("B 第二轮只在尾部追加", len(out2) == len(out1) + 2,
+              f"{len(out1)} -> {len(out2)}")
+        cut2 = json.loads(rec.read_text(encoding="utf-8")).get("cut") or []
+        check("B 水位不再漂移（第二轮没多丢）",
+              sorted(cut2) == sorted(data.get("cut") or []),
+              f"{len(data.get('cut') or [])} -> {len(cut2)}")
+
+        # 翻案：关掉重放就回到 3.37 的「每轮现算、水位漂移」
+        mark = (d / "proxy.log").stat().st_size
+        proxy.CUT_REPLAY = False
+        hb3 = hist("B", 4000, 6000, 4000) + [
+            {"role": "user", "content": "第三轮：还有别的名额吗？"}]
+        proxy.transform({"model": "m", "messages": hb3}, "b3")
+        tail = (d / "proxy.log").read_text(encoding="utf-8")[mark:]
+        check("翻案开关关掉后不重放（还原 3.37）",
+              "丢弃水位重放" not in tail and len(hb3) < 13,
+              f"{len(hb3)}")
+    finally:
+        (proxy.SESS_DIR, proxy.LOG_PATH, proxy.PREFIX_DIR, proxy.THRESHOLD,
+         proxy.DROP_ONLY, proxy.PREFIX_STRICT, proxy.CHECKPOINT,
+         proxy.HOT_MSGS, proxy.HOT_TOKENS, proxy.LAZY_COMPRESS,
+         proxy.CONTEXT, proxy.WORK_WINDOW, proxy.RESERVE, proxy.TARGET_MSG,
+         proxy.MIN_MSG, proxy.LOW_MSG, proxy.REPEAT_DEDUPE, proxy.L2_FOLD,
+         proxy.COLD_PROBE, proxy.get_summary, proxy._calib,
+         proxy.TASK_MODE) = saved
+        proxy.CUT_REPLAY = True
+        proxy._prefix_mem.clear()
+        proxy._prefix_mem.update(old_mem)
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_interrupt_merge_339():
+    """3.39：打断档新语义——掐断在途的同时，旧问显式并入新消息尾部，两条参考着完成。
+
+    参照 Qoder 主程序（新消息掐旧轮、旧问留在历史里、新轮看着两条一起答）；
+    启动器 exe 只是引导壳、不处理消息。翻案 PROXY_INTERRUPT_MERGE=0 还原纯掐断。
+    有牙核验：改前 _policy_acquire 不带 question/merge_q、_interrupt_merge 不存在。
+    """
+    import json
+    psrc = (HERE / "proxy" / "proxy.py").read_text(encoding="utf-8")
+    check("PROXY_VERSION=3.39", 'PROXY_VERSION = "3.41"' in psrc, "missing")
+    check("打断合并开关默认开（PROXY_INTERRUPT_MERGE=0 翻案）",
+          'INTERRUPT_MERGE = _env("PROXY_INTERRUPT_MERGE", "1") == "1"' in psrc)
+    check("调用点把旧问并入尾部",
+          "if mq and INTERRUPT_MERGE and _interrupt_merge(data, mq):" in psrc)
+
+    old_q = "上一问：端口 8082 的配置项在哪改？"
+    body = {"messages": [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "旧问正文"},
+        {"role": "assistant", "content": "旧答"},
+        {"role": "user", "content": "新问：顺便把上一问也答了"}]}
+    head_before = json.dumps(body["messages"][:-1], ensure_ascii=False, sort_keys=True)
+    ok = proxy._interrupt_merge(body, old_q)
+    check("合并落在尾部最后一条 user", ok is True)
+    tail = body["messages"][-1]["content"]
+    check("旧问逐字带进新消息", old_q in tail and "两条互相参考" in tail, tail[-160:])
+    check("头部字节不动（前缀缓存不受影响）",
+          json.dumps(body["messages"][:-1], ensure_ascii=False,
+                     sort_keys=True) == head_before)
+    b2 = {"messages": [{"role": "user",
+                        "content": [{"type": "text", "text": "多模态新问"}]}]}
+    check("多模态 content 追加 text 块", proxy._interrupt_merge(b2, old_q)
+          and old_q in b2["messages"][-1]["content"][-1]["text"])
+    b3 = {"messages": [{"role": "user", "content": "新问"}]}
+    check("旧问为空不合并", proxy._interrupt_merge(b3, "") is False
+          and b3["messages"][0]["content"] == "新问")
+    b4 = {"messages": [{"role": "assistant", "content": "无 user"}]}
+    check("没有 user 不合并", proxy._interrupt_merge(b4, old_q) is False)
+
+    ck = "interrupt-merge-339"
+    ck2 = "interrupt-merge-339-wait"
+    ck3 = "interrupt-merge-339-solo"
+    try:
+        r1 = proxy._policy_acquire(ck, "interrupt", "t", question=old_q)
+        check("在途登记带上旧问", r1.get("q") == old_q)
+        r1["done"].set()                      # 否则 interrupt 档真等 30 秒收尾
+        r2 = proxy._policy_acquire(ck, "interrupt", "t", question="新问")
+        check("interrupt 把在途旧问带回来", r2.get("merge_q") == old_q,
+              str(r2.get("merge_q")))
+        check("interrupt 仍掐断在途", r1["cancel"].is_set())
+        proxy._policy_release(ck, r2)
+        w1 = proxy._policy_acquire(ck2, "interrupt", "t", question="旧问W")
+        w1["done"].set()                      # 否则 wait 档真等 30 分钟
+        w2 = proxy._policy_acquire(ck2, "wait", "t", question="新问W")
+        check("wait 档不带旧问（只排队）", "merge_q" not in w2)
+        proxy._policy_release(ck2, w2)
+        n1 = proxy._policy_acquire(ck3, "interrupt", "t", question="新问")
+        check("无在途时 interrupt 不合并", "merge_q" not in n1)
+        proxy._policy_release(ck3, n1)
+    finally:
+        with proxy._INFLIGHT_LOCK:
+            for k in (ck, ck2, ck3):
+                proxy._INFLIGHT.pop(k, None)
+
+
+def test_digest_lineclean_340():
+    """3.40 C：摘要行边界清理 + 补录按源行号归位（确定性、零模型调用）。
+
+    实测（2026-11-13 九臂对照 C 臂）：残片 2→0、token 1582→1580、事实针不变。
+    翻案 PROXY_DIGEST_LINECLEAN=0 还原 3.39 裸摘要。
+    有牙核验：改前 _digest_lineclean 不存在、_digest 无 DIGEST_LINECLEAN 钩子。
+    """
+    import json
+    import shutil
+    import tempfile
+    psrc = (HERE / "proxy" / "proxy.py").read_text(encoding="utf-8")
+    check("PROXY_VERSION=3.40", 'PROXY_VERSION = "3.41"' in psrc, "missing")
+    check("C 开关默认开（PROXY_DIGEST_LINECLEAN=0 翻案）",
+          'DIGEST_LINECLEAN = _env("PROXY_DIGEST_LINECLEAN", "1") == "1"' in psrc)
+    check("钩子在回填之后", "if DIGEST_LINECLEAN:" in psrc
+          and "_digest_lineclean(out, work)" in psrc)
+
+    src = ("2026-11-06 17:14:53 [t] alpha line one\n"
+           "2026-11-06 17:14:54 [t] beta line two\n"
+           "short\n")
+    digest = ("[第 1/1 段]\n"
+              "2026-11-06 17:14:54 [t] beta line two\n"
+              "2\n"
+              "short\n"
+              "\n【原文补录·逐字核对】\n"
+              "- …beta line two…\n"
+              "- …alpha line one…\n"
+              "- 其余缺失值（逐字）：x")
+    clean = proxy._digest_lineclean(digest, src)
+    check("行中截断残片被删", "\n2\n" not in clean, clean)
+    check("完整短行不被误删", "\nshort\n" in clean, clean)
+    check("补录按源行号归位",
+          clean.index("- …alpha") < clean.index("- …beta"), clean)
+    check("缺失值清单保持尾置",
+          clean.rstrip().endswith("- 其余缺失值（逐字）：x"), clean[-80:])
+    check("确定性：同输入同字节", clean == proxy._digest_lineclean(digest, src))
+
+    old = (proxy.SESS_DIR, proxy.LOG_PATH, proxy.PREFIX_DIR, proxy.THRESHOLD,
+           proxy.DROP_ONLY, proxy.LAZY_COMPRESS, proxy.get_summary)
+    d = Path(tempfile.mkdtemp(prefix="lc340-"))
+    proxy.SESS_DIR, proxy.LOG_PATH, proxy.PREFIX_DIR = d, d / "p.log", d / "pf"
+    proxy.THRESHOLD, proxy.DROP_ONLY, proxy.LAZY_COMPRESS = 100, 0, False
+    wrapped = (f"{proxy.MARKER} 原始消息共 {len(src)} 字符 / 约 "
+               f"{proxy.count_tokens(src)} tokens，以下为压缩摘要：\n" + clean)
+    proxy.get_summary = lambda *a, **k: wrapped
+    heads = []
+    try:
+        for turn in range(2):
+            body = {"messages": [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": wrapped},
+                {"role": "assistant", "content": "old"},
+                {"role": "user", "content": f"tail {turn}"}]}
+            proxy.transform(body, f"lc{turn}")
+            heads.append(json.dumps(body["messages"][1], ensure_ascii=False,
+                                    sort_keys=True))
+        check("C 摘要跨轮头部字节稳定", heads[0] == heads[1])
+        check("C 摘要带 MARKER 头不再进压缩候选",
+              proxy._candidates([{"role": "user", "content": wrapped}], set()) == [])
+    finally:
+        (proxy.SESS_DIR, proxy.LOG_PATH, proxy.PREFIX_DIR, proxy.THRESHOLD,
+         proxy.DROP_ONLY, proxy.LAZY_COMPRESS, proxy.get_summary) = old
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_rb_fullconv_511():
+    """5.1.1：回滚下拉恒空修——实况表 8 位显示截断键还原全键再定位 snap 目录。
+
+    根因：ctx_rows 第一列是 key[:8] 显示截断，_rb_conv_now 拿它拼 snap 目录
+    永远拼不中 16 位全键 → 下拉恒空。有牙核验：改前 _rb_conv_now 直接返回
+    截断键、无 rb_full_conv。
+    """
+    import json
+    import os
+    import shutil
+    import tempfile
+    import time
+    mod, p = _gui_main_mod()
+    check("GUI 模块加载", mod is not None, str(p))
+    msrc = p.read_text(encoding="utf-8")
+    check("APP_VERSION=5.1.1", 'APP_VERSION = "5.1.2"' in msrc, "missing")
+    check("截断键还原函数在", "def rb_full_conv(short: str) -> str:" in msrc)
+    check("_rb_conv_now 走还原", "return rb_full_conv(self.kpi_conv)" in msrc
+          and "return rb_full_conv(str(vals[0]))" in msrc)
+    d = Path(tempfile.mkdtemp(prefix="rb511-"))
+    full = "2a2005466fd89d30"
+    snap = d / full / "snap"
+    snap.mkdir(parents=True)
+    day = time.strftime("%Y-%m-%d")
+    (snap / "1.json").write_text(json.dumps({"day": day, "t": "12:08:38"}),
+                                 encoding="utf-8")
+    (d / "stats.json").write_text(json.dumps(
+        {"conversations": [{"key": full, "total": 1}]}), encoding="utf-8")
+    old_env = {k: os.environ.get(k)
+               for k in ("PROXY_SESS_DIR", "LONGCTX_STATS_PATH")}
+    os.environ["PROXY_SESS_DIR"] = str(d)
+    os.environ["LONGCTX_STATS_PATH"] = str(d / "stats.json")
+    try:
+        cls = next(v for v in vars(mod).values()
+                   if isinstance(v, type) and hasattr(v, "_rb_snap_times"))
+        obj = cls.__new__(cls)
+        check("8 位截断键还原全键", mod.rb_full_conv(full[:8]) == full)
+        check("全键原样通过", mod.rb_full_conv(full) == full)
+        check("还原不到原样返回（宁可空也不猜）",
+              mod.rb_full_conv("ffffffff") == "ffffffff")
+        obj.kpi_conv = full[:8]
+        obj.ctx_tree = type("T", (), {"get_children": lambda self: []})()
+        check("_rb_conv_now 返回全键", obj._rb_conv_now() == full)
+        check("全键能读到今天快照", obj._rb_snap_times(full) == ["12:08:38"])
+        check("截断键读不到快照（复现改前 bug）",
+              obj._rb_snap_times(full[:8]) == [])
+        check("5.1.2 三段隔离+回滚每 tick 必刷",
+              "if updated != self._ctx_sig:" in msrc
+              and "self._rb_refresh(stats)" in msrc)
+        obj.kpi_conv = None
+        obj.ctx_tree = None
+        check("实况表未建时回滚目标取 stats 全键兜底",
+              obj._rb_conv_now() == full)
+    finally:
+        for k, v in old_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_digest_defaults_341():
+    """3.41：cap 地板按 token 缩放 + FACT_BACKFILL/EVIDENCE 默认关（多样本 k0 最优）。
+    翻案：PROXY_DIGEST_CAP_FLOOR=400 回固定地板；PROXY_FACT_BACKFILL/EVIDENCE=1 回补录。"""
+    psrc = (HERE / "proxy" / "proxy.py").read_text(encoding="utf-8")
+    check("PROXY_VERSION=3.41", 'PROXY_VERSION = "3.41"' in psrc, "missing")
+    check("FACT_BACKFILL 默认关",
+          'FACT_BACKFILL = _env("PROXY_FACT_BACKFILL", "0")' in psrc)
+    check("EVIDENCE 默认关", 'EVIDENCE = _env("PROXY_EVIDENCE", "0")' in psrc)
+    check("cap 地板 env 默认 0(比例)",
+          'PROXY_DIGEST_CAP_FLOOR = int(_env("PROXY_DIGEST_CAP_FLOOR", "0"))' in psrc)
+    old = (proxy.FACT_BACKFILL, proxy.EVIDENCE, proxy.PROXY_DIGEST_CAP_FLOOR)
+    try:
+        proxy.FACT_BACKFILL = False
+        proxy.EVIDENCE = False
+        proxy.PROXY_DIGEST_CAP_FLOOR = 0
+        short = "数值 1001 1002 1003。" * 20
+        cap, ratio, nf = proxy._digest_cap(short)
+        tt = max(1, int(proxy.count_tokens(short) / proxy.TOKEN_FACTOR))
+        check("短文本 cap 按 token 缩放(不再顶格400)", cap < 400,
+              f"cap={cap} tt={tt}")
+        proxy.PROXY_DIGEST_CAP_FLOOR = 400
+        cap2, _, _ = proxy._digest_cap(short)
+        check("翻案固定地板400生效", cap2 >= 400, f"cap2={cap2}")
+    finally:
+        proxy.FACT_BACKFILL, proxy.EVIDENCE, proxy.PROXY_DIGEST_CAP_FLOOR = old
 
 
 def test_ratio_clamp_510():
@@ -4328,7 +4735,155 @@ def test_ratio_clamp_510():
     check("提示在塌缩时说实话", "区间塌缩为固定值" in msrc)
     check("build_env/读取/建议三处夹子都用限幅常量",
           msrc.count("max(RATIO_MIN, min(RATIO_MAX,") >= 3)
-    check("APP_VERSION=5.1.0", 'APP_VERSION = "5.1.0"' in msrc, "missing")
+    check("APP_VERSION=5.1.0", 'APP_VERSION = "5.1.2"' in msrc, "missing")
+
+
+def test_first_action_eval_100():
+    """first_action_eval 1.0.0：REMORY 协议移植的 12 条命门判据。
+
+    三臂构造精确性 / 等预算无泄漏 / 事件筛选 / 标准先行 / 裁判匿名 /
+    交换双跑 / 推理隐藏 / 提案不执行 / bootstrap 可复现 / 费用门 / dry-run 零联网。
+    有牙核验（2026-11-12 实测）：切割贪婪化→fa1/fa2 红；关交换映射→fa7 红；
+    E 池掺 missed→fa2 红。fa1 期望值硬编码，防切割函数变异时自洽假绿。
+    """
+    import argparse
+    import json
+    import tempfile
+    import first_action_eval as fae
+
+    block = ("[longctx:checkpoint v1]\n## 目标\n- 完成 X 任务\n"
+             "## 硬约束（逐字，不得改写）\n- 必须使用口令 AB-1234\n"
+             "## 关键事实（逐字）\n- 网关地址 10.0.0.7\n- 版本 v9.9.9\n"
+             "## 上一轮未提及的锚点（代理核实：回答里逐字没出现；已遵守可忽略）\n"
+             "- 必须使用口令 AB-1234\n- 阈值不得超过 500ms\n"
+             "[longctx:checkpoint end]")
+    sent = {"model": "qwen3.8-flash", "messages": [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "历史对话略"},
+        {"role": "assistant", "content": "好的"},
+        {"role": "user", "content": "现在该做什么？"},
+        {"role": "user", "content": block}]}
+    before, section, after = fae.split_remind(block)
+    arms, info = fae.make_arms(sent)
+    nblock = fae.msg_text(arms["N"]["messages"][-1])
+    # 期望值硬编码，不经 split_remind——否则切割函数变异时期望跟着变，判据自洽假绿
+    n_expect = ("[longctx:checkpoint v1]\n## 目标\n- 完成 X 任务\n"
+                "## 硬约束（逐字，不得改写）\n- 必须使用口令 AB-1234\n"
+                "## 关键事实（逐字）\n- 网关地址 10.0.0.7\n- 版本 v9.9.9\n"
+                "[longctx:checkpoint end]")
+    check("fa1 N臂切割精确（删且仅删提醒节）",
+          nblock == n_expect and fae.REMIND_HEADER not in nblock
+          and arms["N"]["messages"][:-1] == sent["messages"][:-1], nblock[-80:])
+    eblock = fae.msg_text(arms["E"]["messages"][-1])
+    esec = fae.split_remind(eblock)[1]
+    b = proxy.count_tokens(section)
+    et = proxy.count_tokens(esec)
+    missed = fae.remind_items(section)
+    check("fa2 E臂等预算±5%且不含被判漏信息",
+          b * 0.95 <= et <= b * 1.05 and esec != section
+          and all(proxy._norm(m) not in proxy._norm(esec) for m in missed),
+          f"budget={b} e={et}")
+    check("fa3 R臂与 sent 逐字节相同", arms["R"] == sent)
+
+    def _meta(remind, tokens):
+        secs = {"目标": 1, "关键事实（逐字）": 2}
+        if remind:
+            secs["上一轮未提及的锚点（代理核实：回答里逐字没出现；已遵守可忽略）"] = remind
+        return {"time": "2026-11-12 00:00:00", "sent_tokens": tokens,
+                "upstream": "https://fake.example/v1",
+                "upstream_model": "qwen3.8-flash",
+                "checkpoint": {"present": True,
+                               "tokens": proxy.count_tokens(block),
+                               "sections": secs}}
+
+    with tempfile.TemporaryDirectory() as td:
+        tp = Path(td)
+        for stem, meta in (("20261112-000001-a-1", _meta(2, 1000)),
+                           ("20261112-000002-b-2", _meta(0, 1000)),
+                           ("20261112-000003-c-3", _meta(1, 999999)),
+                           ("20261112-000004-a-1", _meta(2, 1000))):
+            (tp / f"{stem}-meta.json").write_text(
+                json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+            (tp / f"{stem}-sent.json").write_text(
+                json.dumps(sent, ensure_ascii=False), encoding="utf-8")
+        evs, skipped = fae.select_events(td, 100000, 10)
+        check("fa4 事件筛选：只取回注轮+去重+超长跳过",
+              len(evs) == 1 and skipped == 1 and evs[0]["remind_count"] == 2,
+              f"n={len(evs)} skipped={skipped}")
+        ev = evs[0]
+        cr = fae.build_criteria(ev)
+        records = []
+        orig_bc, orig_ca, orig_jc = (fae.build_criteria, fae.call_action,
+                                     fae.judge_call)
+        orig_urlopen = fae.urllib.request.urlopen
+
+        def _boom(*a, **k):
+            raise AssertionError("评测管线偷发原始网络请求")
+
+        fae.build_criteria = lambda e: (records.append("criteria"), orig_bc(e))[1]
+        fae.call_action = lambda *a, **k: (
+            records.append("gen"),
+            {"content": "动作 ok", "tool_calls": [], "usage": {},
+             "latency": 0.0})[1]
+        fae.judge_call = lambda *a, **k: (records.append("judge"), "WIN甲\n理由")[1]
+        fae.urllib.request.urlopen = _boom
+        no_raw_net = False
+        try:
+            crs = fae.prepare([ev])
+            args = argparse.Namespace(temperature=0.0, max_tokens=64,
+                                      timeout=5, local_repeat=1)
+            rs = fae.evaluate([ev], crs, lambda e: "k",
+                              {"base": "https://j.example", "key": "k",
+                               "model": "deepseek-v4.1-flash-1017"}, args)
+            no_raw_net = len(rs) == 1 and not rs[0].get("dropped")
+        finally:
+            fae.build_criteria, fae.call_action, fae.judge_call = (
+                orig_bc, orig_ca, orig_jc)
+            fae.urllib.request.urlopen = orig_urlopen
+        check("fa5 标准先行：criteria 固定早于任何生成",
+              bool(records) and records[0] == "criteria"
+              and "gen" in records
+              and records.index("criteria") < records.index("gen"),
+              str(records[:6]))
+        p = fae.judge_prompt(cr, "动作甲内容", "动作乙内容")
+        check("fa6 裁判载荷匿名（无提醒节标记/无臂标签/含双候选）",
+              fae.REMIND_HEADER not in p and "R臂" not in p
+              and "N臂" not in p and "E臂" not in p
+              and "动作甲内容" in p and "动作乙内容" in p)
+        check("fa7 交换双跑：一致计胜负、不一致记平、无效剔除",
+              fae.combine_verdicts("A", "B") == ("A", False)
+              and fae.combine_verdicts("B", "A") == ("B", False)
+              and fae.combine_verdicts("TIE", "TIE") == ("TIE", False)
+              and fae.combine_verdicts("A", "A") == ("TIE", True)
+              and fae.combine_verdicts(None, "A") == (None, False))
+        t = fae.action_text({"content": "正文", "reasoning_content": "秘密推理",
+                             "tool_calls": []})
+        check("fa8 推理隐藏：reasoning 不进动作文本与裁判载荷",
+              t == "正文" and "秘密推理" not in fae.judge_prompt(cr, t, t))
+        t2 = fae.action_text({"content": "", "tool_calls": [
+            {"function": {"name": "run", "arguments": "{\"cmd\":\"ls\"}"}}]})
+        check("fa9 tool_call 只序列化不执行（管线零原始网络）",
+              "run" in t2 and "ls" in t2 and "[tool_call]" in t2 and no_raw_net)
+        check("fa10 bootstrap 固定种子可复现+全胜区间为1",
+              fae.bootstrap_net([1, 0, -1, 1], B=2000, seed=7)
+              == fae.bootstrap_net([1, 0, -1, 1], B=2000, seed=7)
+              and fae.bootstrap_net([1, 1, 1], B=200, seed=1)[0] == 1.0)
+        big = tp / "big"
+        big.mkdir()
+        (big / "20261112-000009-z-9-meta.json").write_text(
+            json.dumps(_meta(2, 5000000), ensure_ascii=False), encoding="utf-8")
+        (big / "20261112-000009-z-9-sent.json").write_text(
+            json.dumps(sent, ensure_ascii=False), encoding="utf-8")
+        fae.urllib.request.urlopen = _boom
+        try:
+            rc_gate = fae.main(["--dump-dir", str(big), "--max-prompt-tokens",
+                                "9000000", "--budget", "0.01"])
+            rc_dry = fae.main(["--dump-dir", td, "--dry-run"])
+        finally:
+            fae.urllib.request.urlopen = orig_urlopen
+        check("fa11 费用门：超预算无 --yes 退出码2且零请求", rc_gate == 2,
+              f"rc={rc_gate}")
+        check("fa12 dry-run 零联网退出码0", rc_dry == 0, f"rc={rc_dry}")
 
 
 def test_cache_no_outbound_334():
@@ -4351,7 +4906,7 @@ def test_cache_no_outbound_334():
           '"ch": ct.get("hit")' in psrc and '"hr": ct.get("rate")' in psrc
           and '"cw": ct.get("made")' in psrc)
     check("PROXY_VERSION=3.34（代理本次动了）",
-          'PROXY_VERSION = "3.36"' in psrc, "missing")
+          'PROXY_VERSION = "3.41"' in psrc, "missing")
 
 
 def test_gui_cache_columns_334():
@@ -4364,7 +4919,7 @@ def test_gui_cache_columns_334():
     check("帮助文字讲清与绿线不是一回事",
           "\u547d\u4e2d tok\uff0f\u547d\u4e2d\u7387" in msrc
           and "\u4e0d\u662f\u4e00\u56de\u4e8b" in msrc)
-    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.0"' in msrc, "missing")
+    check("APP_VERSION=5.0.8", 'APP_VERSION = "5.1.2"' in msrc, "missing")
     if mod is None:
         return
     base = {"key": "abcdef1234567890", "body": 1000, "tools": 10, "total": 1010,
@@ -4469,7 +5024,10 @@ if __name__ == "__main__":
                test_probe_boundary_335, test_drop_evidence_335,
                test_drop_fold_wiring_335,
                test_snap_restore_336, test_gui_cache_button_336,
-               test_ratio_clamp_510):
+               test_ratio_clamp_510, test_dump_hook_337, test_cut_replay_338,
+               test_interrupt_merge_339, test_digest_lineclean_340,
+               test_rb_fullconv_511, test_digest_defaults_341,
+               test_first_action_eval_100):
         print(f"\n[{fn.__name__}]")
         try:
             fn()

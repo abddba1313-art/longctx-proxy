@@ -80,7 +80,7 @@ def _env(name: str, default: str) -> str:
 
 
 HERE = Path(__file__).resolve().parent
-PROXY_VERSION = "3.36"
+PROXY_VERSION = "3.41"
 
 # 引擎响应里的实测输入 token（usage.prompt_tokens）；字节级旁观解析用
 _USAGE_RE = re.compile(rb'"prompt_tokens"\s*:\s*(\d+)')
@@ -1192,7 +1192,7 @@ DIGEST_RATIO = float(_env("PROXY_DIGEST_RATIO", "0.50"))
 DIGEST_MAX_TOKENS = int(_env("PROXY_DIGEST_MAX_TOKENS", "24000"))
 # ---------------- v2.0 召回增强 ----------------
 TEMP = float(_env("PROXY_TEMPERATURE", "0"))                 # 0 = 可复现，减少随机遗漏
-FACT_BACKFILL = _env("PROXY_FACT_BACKFILL", "1") == "1"      # 缺失事实用原文片段回填
+FACT_BACKFILL = _env("PROXY_FACT_BACKFILL", "0") == "1"      # 3.41 默认关（全量补录=膨胀且多样本无增益）；=1 翻案
 FACT_BACKFILL_RATIO = float(_env("PROXY_FACT_BACKFILL_RATIO", "0.20"))
 FACT_BACKFILL_MAX = int(_env("PROXY_FACT_BACKFILL_MAX", "6000"))
 # 回填片段以事实为中心的半径（字符）。旧值 ±100 一条事实要吃 100~160 token；
@@ -1308,13 +1308,25 @@ PREFIX_DIR = CACHE_DIR / "prefix"
 TOOLFMT = _env("PROXY_TOOLFMT", "1") == "1"
 # P1 证据分层：T1 标识（环境变量/参数/错误码/文件:行号/哈希/带单位数值/日期）
 # 与 T2 约束定义（如果/仅当/除非/必须/不得/至少/最多/是指/简称）逐字补录。
-EVIDENCE = _env("PROXY_EVIDENCE", "1") == "1"
+EVIDENCE = _env("PROXY_EVIDENCE", "0") == "1"   # 3.41 默认关（逐字补录=膨胀且无增益）；=1 翻案
+# 3.41 cap 地板按 token 缩放：0=比例地板(0.2×true_tokens，短文本也真压缩)；
+# >0=固定地板（设 400 翻案回 3.40）。实验：固定 400 顶得短文本近似逐字不压缩。
+PROXY_DIGEST_CAP_FLOOR = int(_env("PROXY_DIGEST_CAP_FLOOR", "0"))
 EVIDENCE_MAX = int(_env("PROXY_EVIDENCE_MAX", "1600"))
 EVIDENCE_RADIUS = int(_env("PROXY_EVIDENCE_RADIUS", "40"))
 EVIDENCE_RATIO = float(_env("PROXY_EVIDENCE_RATIO", "0.12"))
 # 每轮新增正文 token 的统计（GUI 用它建议 PROXY_THRESHOLD）。
 # 写文件而不是只在 /proxy/stats 里给：代理关着的时候 GUI 也要能读到上次的结果。
 STATS_PATH = Path(_env("PROXY_STATS", str(HERE / "proxy-stats.json")))
+# 字节取证开关：设了才逐轮 dump 出站 body，默认空=关，不碰线上行为。
+DUMP_DIR = _env("PROXY_DUMP_DIR", "")
+
+
+def _dump_outbound(key: str, body: bytes) -> None:
+    d = Path(DUMP_DIR) / key
+    d.mkdir(parents=True, exist_ok=True)
+    n = len(list(d.glob("*.bin")))
+    (d / f"{n:03d}.bin").write_bytes(body)
 TOKENIZER = "o200k_base"
 # tiktoken 对英文比 Qwen 系分词器少数约 15%~20%，乘一个安全系数再和阈值比
 TOKEN_FACTOR = float(_env("PROXY_TOKEN_FACTOR", "1.2"))
@@ -2035,6 +2047,48 @@ def backfill_facts(source: str, summary: str,
                  "added": len(picked), "listed": len(still), "tokens": used}
 
 
+def _digest_lineclean(digest: str, source: str) -> str:
+    """3.40 C：摘要行边界清理 + 补录按源行号归位。确定性、零模型调用。
+
+    实测（2026-11-13 九臂对照，C 臂）：提取被 cap 切在行中会留下裸残片
+    （如单独一行 "2"），补录段尾挂打乱时序。这里只删「是某源行严格前缀的
+    短残片」，不碰完整短行；补录 snippet 按源行号排序，未能定位/其余缺失值
+    清单保持尾置。同输入同字节 → 前缀重放稳定；换格式只断一次前缀。
+    PROXY_DIGEST_LINECLEAN=0 还原 3.39 裸摘要。
+    """
+    src = source.splitlines()
+    whole = set(src)
+    kept = []
+    for ln in digest.splitlines():
+        d = ln.strip()
+        if (d and len(d) < 8 and d not in whole
+                and any(s.startswith(d) and s != d for s in src)):
+            continue                      # 行中截断残片（如裸 "2"）
+        kept.append(ln)
+    head, sup, tail = [], [], []
+    in_sup = False
+    for ln in kept:
+        if ln.startswith("【原文补录"):
+            in_sup = True
+            head.append(ln)
+            continue
+        if not in_sup:
+            head.append(ln)
+        elif ln.startswith("- …"):
+            sup.append(ln)
+        else:
+            tail.append(ln)
+    if sup:
+        def pos(s):
+            core = s.strip("- …").strip()[:30]
+            for i, x in enumerate(src):
+                if core and core in x:
+                    return i
+            return len(src)
+        sup.sort(key=pos)                 # 稳定排序：未匹配的保持原相对顺序
+    return "\n".join(head + sup + tail)
+
+
 def _looks_structured(text: str) -> bool:
     """代码/JSON/表格占比高时，给更高的保留预算。"""
     sample = text[:20000]
@@ -2068,7 +2122,11 @@ def _digest_cap(text: str) -> tuple[int, float, int]:
     cap = int(true_tokens * ratio)
     if DENSITY_CAP:
         cap = max(cap, min(4096, 8 * n_facts + 4 * n_ev))
-    return min(DIGEST_MAX_TOKENS, max(400, cap)), ratio, n_facts
+    # 3.41：地板按 token 缩放（0=0.2×true_tokens，短文本也真压缩）；
+    # PROXY_DIGEST_CAP_FLOOR>0 时用它作固定地板（设 400 翻案回 3.40）。
+    floor = (PROXY_DIGEST_CAP_FLOOR if PROXY_DIGEST_CAP_FLOOR > 0
+             else max(1, int(0.2 * true_tokens)))
+    return min(DIGEST_MAX_TOKENS, max(floor, cap)), ratio, n_facts
 
 
 def _dedupe_lines(text: str) -> str:
@@ -2583,6 +2641,10 @@ def _digest(text: str, source: str, task: str, chunk_conc: int | None = None) ->
                     f"missing id(s), T2 {est['cons_added']}/{est['cons_missing']} "
                     f"constraint/definition(s) restored "
                     f"({est['tokens']} tokens) -> {count_tokens(out)} tokens")
+        # 3.40 C：行边界清理 + 补录按源行号归位（确定性、零模型调用）。
+        # 放在所有模型调用与回填之后，清理结果不会再被改写。
+        if DIGEST_LINECLEAN:
+            out = _digest_lineclean(out, work)
         return out
 
     return asyncio.run(run())
@@ -2881,11 +2943,16 @@ def _load_prefix(key: str) -> dict:
     return data
 
 
-def _prefix_state(messages: list[dict], keys: list[str]) -> tuple[str, int, dict]:
-    """返回 (会话键, 已稳定消息数, 上一轮的压缩记录)。"""
+def _prefix_state(messages: list[dict], keys: list[str],
+                  ckey: str | None = None) -> tuple[str, int, dict]:
+    """返回 (会话键, 已稳定消息数, 上一轮的压缩记录)。
+
+    ckey：3.38 起调用方在「丢弃水位重放」之前算好的会话键必须传进来——
+    重放删掉最旧消息后前两条就变了，重算会把会话认错（前缀/校准全落空）。
+    """
     if not PREFIX_STRICT:
-        return conversation_key(messages), 0, {}
-    ck = conversation_key(messages)
+        return ckey or conversation_key(messages), 0, {}
+    ck = ckey or conversation_key(messages)
     data = _load_prefix(ck)
     if data.get("cfg") != _prefix_cfg():
         return ck, 0, {}
@@ -2912,6 +2979,83 @@ def _apply_stored_prefix(messages: list[dict], keys: list[str],
             _apply_digest(messages, i, rec["out"])
             applied += 1
     return applied
+
+
+# ---- 3.38 丢弃水位入前缀 ----
+# 只丢不摘是「每轮现算」的：客户端把被丢的旧消息原样发回来，代理按当轮总量
+# 重新丢一遍。总量每轮都在长，丢弃水位就每轮往前漂（实测 2026-11-12 21:30~21:38
+# 连续七轮 179→181→183→185→187→189→191 条），头部第一条消息轮轮不同 →
+# 云端隐式缓存在压缩轮只能命中工具定义那一段（23040/24640 ≈ 93%，正文全价）。
+# 水位记进前缀文件、下一轮逐字重放同一批删除，头部才真的稳定；丢弃深度与
+# 触发线仍归 GUI 的建议上下文，这里只保证「同一条水位不重复漂移」。
+CUT_REPLAY = _env("PROXY_PREFIX_CUT", "1") == "1"
+CUT_KEEP = max(64, int(_env("PROXY_PREFIX_CUT_KEEP", "4096")))
+_cut_local = threading.local()
+# 3.39 打断档新语义：掐断在途的同时，把旧问显式并入新消息尾部，两条参考着完成
+# （参照 Qoder 主程序：新消息掐旧轮、旧问留在历史里、新轮看着两条一起答；
+# 启动器 exe 只是引导壳，不处理消息）。0=还原 3.38 的纯掐断（旧回答作废、不补任务）。
+INTERRUPT_MERGE = _env("PROXY_INTERRUPT_MERGE", "1") == "1"
+# 3.40 C：摘要行边界清理 + 补录按源行号归位（确定性、零模型调用）。
+# 0=还原 3.39 的裸摘要（行中截断残片 + 补录尾挂乱序）。
+DIGEST_LINECLEAN = _env("PROXY_DIGEST_LINECLEAN", "1") == "1"
+
+
+def _stored_cut(ckey: str) -> list[str]:
+    """上一轮记下的丢弃水位（消息内容哈希，按丢弃先后）。配置变了作废。"""
+    if not CUT_REPLAY:
+        return []
+    data = _load_prefix(ckey)
+    if data.get("cfg") != _prefix_cfg():
+        return []
+    cut = data.get("cut") or []
+    if not isinstance(cut, list):
+        return []
+    return [str(x) for x in cut if isinstance(x, str)][:CUT_KEEP]
+
+
+def _replay_cut(messages: list[dict], cut: list[str], tag: str) -> list[str]:
+    """逐字重放上一轮的整条丢弃，返回本轮真正命中的哈希（即新的水位）。
+
+    按内容哈希从最旧往后删，同内容多条按次数对应；system/developer 与检查点
+    块从来不在水位里，最后一条永远保住（与 PROXY_DROP_KEEP_LAST 同一底线）。
+    没命中的哈希=客户端自己已经把那条历史裁掉了，永远不会再匹配，直接作废，
+    水位因此不会无限增长。
+    """
+    if not cut:
+        return []
+    need: dict[str, int] = {}
+    for h in cut:
+        need[h] = need.get(h, 0) + 1
+    used: list[str] = []
+    i = 0
+    while i < len(messages) - 1:
+        m = messages[i]
+        if (not isinstance(m, dict) or m.get("role") in ("system", "developer")
+                or (checkpoint is not None and checkpoint.is_mark(m))):
+            i += 1
+            continue
+        h = _msg_key(m)
+        if need.get(h):
+            need[h] -= 1
+            used.append(h)
+            del messages[i]
+            continue
+        i += 1
+    if used:
+        log(f"  [{tag}] 丢弃水位重放：整条删除 {len(used)} 条旧消息"
+            f"（与上一轮同一批，头部字节不变）")
+    return used
+
+
+def _note_cut(m) -> None:
+    """把本轮整条丢弃的消息记进水位，下一轮原样重放（不重算、不漂移）。"""
+    if not CUT_REPLAY:
+        return
+    lst = getattr(_cut_local, "keys", None)
+    if lst is None:
+        lst = _cut_local.keys = []
+    if len(lst) < CUT_KEEP:
+        lst.append(_msg_key(m) if isinstance(m, dict) else "x")
 
 
 def _hot_indices(messages: list[dict], tools_tokens: int = 0) -> set[int]:
@@ -2972,29 +3116,27 @@ def _note_xform(i: int, kind: str) -> None:
 
 
 def _save_prefix(conv_key: str, messages: list[dict], orig_keys: list[str],
-                 stored: dict, frozen: set[int], log_map: dict | None = None) -> None:
+                 stored: dict, frozen: set[int], log_map: dict | None = None,
+                 final_keys: list[str] | None = None) -> None:
     if not PREFIX_STRICT:
         return
-    keep = set(orig_keys)
-    xform = {k: v for k, v in (stored or {}).items() if k in keep}
-    # "只丢不摘"会 del messages[...]：messages 比 orig_keys 短，且尾巴整体前移。
-    # 下标只对 orig_keys 设界时，被丢掉的消息会越界（IndexError），
-    # 前移后的下标还会把变换记到别的消息头上。两者都必须在记录前剔除。
     n = len(messages)
-    shift = len(orig_keys) - n
+    # 3.38：keys_now[i] 恒等于 messages[i] 的内容键。"只丢不摘"会 del messages[...]，
+    # 旧的 shift 算术只在「删掉的正好是最前面连续一段」时成立——system 消息永远
+    # 不被删，实际并不是连续一段，错一位就把变换记到别的消息头上。改由调用方
+    # 同步维护键表；存的也是丢弃后的键表，下一轮重放同一批删除后才对得齐。
+    keys_now = final_keys if final_keys is not None else orig_keys[:n]
+    xform = {k: v for k, v in (stored or {}).items() if k in set(keys_now)}
     for i, kind in (log_map or {}).items():
         # recompact 是唯一允许改冻结前缀的变换，其余仍只保存新增尾部。
-        if not (0 <= i < len(orig_keys)) or (i in frozen and kind != "recompact"):
+        if not (0 <= i < n) or (i in frozen and kind != "recompact"):
             continue
-        if shift > 0:
-            if i < shift:
-                continue                  # 这条已被整条丢弃，没有正文可记
-            i -= shift
-        xform[orig_keys[i + shift]] = {
+        xform[keys_now[i]] = {
             "kind": kind,
             "out": "\n\n".join(_parts(messages[i])[0]),
         }
-    data = {"keys": orig_keys, "xform": xform, "cfg": _prefix_cfg(),
+    data = {"keys": keys_now, "xform": xform, "cfg": _prefix_cfg(),
+            "cut": list(getattr(_cut_local, "keys", None) or [])[:CUT_KEEP],
             "updated": time.strftime("%Y-%m-%d %H:%M:%S")}
     with _prefix_lock:
         _prefix_mem[conv_key] = data
@@ -3534,6 +3676,31 @@ def _maybe_checkpoint_reset(body: dict, tag: str, final: int,
         log("reset goal reseed failed:\n" + traceback.format_exc())
 
 
+def _candidates(messages: list[dict], frozen: set[int]) -> list[tuple[int, int, str]]:
+    """可压缩候选：(token 数, 下标, 正文)，按大小倒序。
+
+    3.38 抽成函数：只丢不摘 del 掉消息后下标整体前移，必须能用新下标重算，
+    否则后面的梯队会拿旧下标摘要到别的消息头上（甚至越界）。
+    """
+    cands = []
+    for i, m in enumerate(messages):
+        if i in frozen:
+            continue
+        if not isinstance(m, dict) or m.get("role") in ("system", "developer"):
+            continue
+        texts = _parts(m)[0]
+        if not texts:
+            continue
+        joined = "\n\n".join(texts)
+        if _already_done(joined):
+            continue
+        n = count_tokens(joined)
+        if n >= LOW_MSG:
+            cands.append((n, i, joined))
+    cands.sort(reverse=True)
+    return cands
+
+
 def _transform_inner(body: dict, tag: str) -> tuple[int, int]:
     """超过阈值时用 longctx 摘要替换超大消息，并把 max_tokens 压到剩余窗口内。
 
@@ -3542,6 +3709,7 @@ def _transform_inner(body: dict, tag: str) -> tuple[int, int]:
     只允许新增尾部变化 —— 这是长对话 prefix cache 命中的前提。
     """
     messages = body.get("messages") or []
+    _cut_local.keys = []          # 3.38：水位每轮重新起算，不带上一个会话的残留
     mt, tt, orig = request_tokens(body)
     if _is_summarization(body):
         return _handle_summarization(body, tag, orig)
@@ -3554,8 +3722,19 @@ def _transform_inner(body: dict, tag: str) -> tuple[int, int]:
         clamp_max_tokens(body, orig, tag)
         return orig, orig
 
+    # 3.38 丢弃水位重放。会话键必须在重放之前算：认会话靠「前两条消息」，
+    # 水位删掉最旧的以后前两条就变了，重算会把整条会话认错（前缀/校准全落空，
+    # 与 do_POST 坚持用转发前 ckey 是同一个教训）。
+    ckey_full = conversation_key(messages)
+    _cut_local.keys = _replay_cut(messages, _stored_cut(ckey_full), tag)
+    if _cut_local.keys:
+        log(f"  [{tag}] 水位重放后总量 {request_tokens(body)[2]} tokens"
+            f"（客户端原文 {orig} tokens）")
+        mt, tt, orig = request_tokens(body)
+
     orig_keys = _message_keys(messages)
-    conv_key, stable, stored = _prefix_state(messages, orig_keys)
+    alive_keys = orig_keys        # 3.38：只丢不摘 del 消息时同步 pop，见丢弃循环
+    conv_key, stable, stored = _prefix_state(messages, orig_keys, ckey=ckey_full)
     hot = _hot_indices(messages, tt)
     pin = _pin_indices(messages, hot, tt)
     frozen = set(range(stable)) | pin
@@ -3610,22 +3789,7 @@ def _transform_inner(body: dict, tag: str) -> tuple[int, int]:
         f"target {_target_msg()}, hard cap {hard})")
 
     # 候选：按大小排序，够长、非 system、没消化过、且不在冻结前缀里的消息
-    cands = []
-    for i, m in enumerate(messages):
-        if i in frozen:
-            continue
-        if not isinstance(m, dict) or m.get("role") in ("system", "developer"):
-            continue
-        texts = _parts(m)[0]
-        if not texts:
-            continue
-        joined = "\n\n".join(texts)
-        if _already_done(joined):
-            continue
-        n = count_tokens(joined)
-        if n >= LOW_MSG:
-            cands.append((n, i, joined))
-    cands.sort(reverse=True)
+    cands = _candidates(messages, frozen)
     big = sum(1 for n, _, _ in cands if n >= MIN_MSG)
     log(f"  [{tag}] {len(cands)} candidate message(s) ({big} >= {MIN_MSG} tokens, "
         f"{len(frozen)} frozen)")
@@ -3660,8 +3824,11 @@ def _transform_inner(body: dict, tag: str) -> tuple[int, int]:
     # 3.10 只丢不摘：超预算时从最旧的一条起整条丢弃（原文一字不改、零远端调用）。
     # 3.9 已保证最新大消息保留原文；更早的历史按整条淘汰，检查点保留规则/事实。
     # 丢到 85% 预算留迟滞，避免每轮都断一次前缀。
+    # 3.38：迟滞只有在「水位会被记住」时才成立——本轮丢掉的消息记进 _cut_local，
+    # 下一轮开头逐字重放，头部字节才不随总量增长而轮轮漂移。
     if DROP_ONLY and after > budget:
         target_drop = max(4096, int(budget * 0.85))
+        alive_keys = list(orig_keys)      # 3.38：与 messages 同步删，存前缀要用
         keep_from = len(messages) - len(hot) if hot else len(messages)
         # 最后一条永远不许丢。hot 会被上面的 cap 削空（单条巨型消息就是这种场景：
         # 它自己就超 HOT_TOKENS，收进来又被迫吐出去），削空后 keep_from == len，
@@ -3671,13 +3838,14 @@ def _transform_inner(body: dict, tag: str) -> tuple[int, int]:
         dropped = 0
         # 3.13 ①：丢弃前按"前两条消息"认会话（此刻最旧消息还在，键与 do_POST
         # 的 ckey 同源）；检查点路径优先用组装点传下来的 conv。
+        # 3.38：水位重放已经删过最旧的几条，这里一律用重放前算好的 ckey_full。
         cold_key = (getattr(_cp_local, "conv", "") or ""
                     if COLD_PROBE else "")
         if COLD_PROBE and not cold_key:
-            cold_key = conversation_key(messages)
+            cold_key = ckey_full
         # 3.32 ③④：丢弃前收用户纠正句折入检查点；本轮丢弃数进 KPI drp 标记
         # （那轮回声测的是删除不是记忆，GUI 池剔除）。键此刻与 ckey 同源。
-        dkey = getattr(_cp_local, "conv", "") or conversation_key(messages)
+        dkey = getattr(_cp_local, "conv", "") or ckey_full
         fold_txts = []
         fold_ev = []        # 3.35：被丢工具结果的事实句，丢前折入检查点
         while after > target_drop:
@@ -3704,7 +3872,10 @@ def _transform_inner(body: dict, tag: str) -> tuple[int, int]:
                 fold_ev.append(vtxt)        # 3.35：证据不随删除消失
             if (COLD_PROBE and vtxt and v.get("role") in ("user", "assistant")):
                 cold_register(cold_key, cold_candidates(vtxt))
+            _note_cut(v)                      # 3.38：水位记住这条，下轮原样重放
             del messages[victim]
+            alive_keys.pop(victim)
+            removed = 1
             # 连带丢弃该 assistant 的相邻 tool 结果，防止孤儿 tool 消息被上游 400
             ids = set()
             if isinstance(v, dict) and v.get("role") == "assistant":
@@ -3718,14 +3889,33 @@ def _transform_inner(body: dict, tag: str) -> tuple[int, int]:
                 if tv:
                     fold_ev.append(tv)      # 3.35：连带丢的工具结果同样是证据
                 gone += count_tokens(tv)
+                _note_cut(messages[victim])   # 3.38：连带丢的工具结果同入水位
                 del messages[victim]
-            keep_from -= 1
+                alive_keys.pop(victim)
+                removed += 1
+            # 3.38 修：边界要按「本轮实际删掉的条数」退，不是恒退 1。连带 tool
+            # 结果让列表一次掉 2~3 条而边界只退 1，热层被逐步吃穿——实测
+            # 2026-11-12 21:38 一轮丢掉 191 条直到只剩 1 条，最新对话一起没了。
+            keep_from = max(0, keep_from - removed)
             dropped += 1
             after = max(0, after - gone - 4)
         if dropped:
             after = request_tokens(body)[2]
             log(f"  [{tag}] 只丢不摘：整条丢弃最旧 {dropped} 条原文"
-                f"（保留 {len(messages)} 条，未摘要）-> {after} tokens")
+                f"（保留 {len(messages)} 条，未摘要）-> {after} tokens"
+                f"；水位 {len(_cut_local.keys or [])} 条入前缀，下轮原样重放"
+                + ("" if after <= target_drop
+                   else "；可丢边界已到（热层护住），剩余超线不再动冻结前缀"))
+            # 3.38：del 让下标整体前移，热层/冻结/候选记的全是旧下标。不重算，
+            # 后面的梯队会摘要到别的消息头上，甚至 IndexError 让整个 transform
+            # 失败、原文直发（大报文直接撞引擎 400）。头部既然换了，旧前缀的
+            # 对齐关系一并作废（stable=0），下一轮从新头部重新攒前缀。
+            hot = _hot_indices(messages, tt)
+            pin = _pin_indices(messages, hot, tt)
+            frozen = set(hot) | pin
+            stable = 0
+            cands = _candidates(messages, frozen)
+            big_msgs = [x for x in cands if x[0] >= MIN_MSG]
             # 3.32 ④：标记本轮，KPI 行 drp>0 → GUI 绿线/基线池剔除。
             if len(_DROP_LAST) > 256:
                 _DROP_LAST.clear()
@@ -3838,7 +4028,7 @@ def _transform_inner(body: dict, tag: str) -> tuple[int, int]:
     clamp_max_tokens(body, after, tag)
     mt, tt, final = request_tokens(body)
     _save_prefix(conv_key, messages, orig_keys, stored, frozen,
-                 getattr(_xform_local, "d", {}) or {})
+                 getattr(_xform_local, "d", {}) or {}, final_keys=alive_keys)
     _xform_local.d = None
     return orig, final
 
@@ -4656,10 +4846,48 @@ def routing_hide_thinking(upstream_url: str | None = None) -> bool:
             and _local_upstream(upstream_url or UPSTREAM))
 
 
-def _policy_acquire(ckey: str, policy: str, tag: str) -> dict:
+def _last_user_question(msgs: list) -> str:
+    """3.39：取最后一条 user 的文本（多模态取 text 块拼接），供打断档带旧问。"""
+    for m in reversed(msgs):
+        if not isinstance(m, dict) or m.get("role") != "user":
+            continue
+        c = m.get("content")
+        if isinstance(c, str):
+            return c
+        if isinstance(c, list):
+            return "".join(p.get("text", "") for p in c
+                           if isinstance(p, dict) and p.get("type") == "text")
+    return ""
+
+
+def _interrupt_merge(body: dict, old_q: str) -> bool:
+    """3.39 打断档新语义：新消息显式带上旧问的要求，两条参考着完成。
+    只追加在尾部最后一条 user 上——头部字节不动，前缀缓存不受影响。
+    参照 Qoder 主程序：新消息掐旧轮、旧问留在历史里、新轮看着两条一起答。"""
+    msgs = body.get("messages")
+    if not isinstance(msgs, list) or not old_q:
+        return False
+    note = (f"\n\n[longctx:interrupt] 上一轮被中断、尚未答完的问题：{old_q}\n"
+            f"请把上面这个问题与本轮问题一起完成，两条互相参考，不要只答本轮。")
+    for m in reversed(msgs):
+        if not isinstance(m, dict) or m.get("role") != "user":
+            continue
+        c = m.get("content")
+        if isinstance(c, str):
+            m["content"] = c + note
+        elif isinstance(c, list):
+            m["content"] = c + [{"type": "text", "text": note}]
+        else:
+            return False
+        return True
+    return False
+
+
+def _policy_acquire(ckey: str, policy: str, tag: str, question: str = "") -> dict:
     """新请求到达时对同会话在途请求做动作：wait=排队等在途完成；
-    interrupt=给在途发取消信号（_forward 关上游连接，引擎出 (cancelled)）。
-    随后把"我"登记为在途。"""
+    interrupt=给在途发取消信号（_forward 关上游连接，引擎出 (cancelled)），
+    3.39 起还把在途那轮的旧问带回来（rec["merge_q"]），由调用方并入新消息尾部。
+    随后把"我"登记在途。"""
     with _INFLIGHT_LOCK:
         prev = _INFLIGHT.get(ckey)
     if prev is not None:
@@ -4670,7 +4898,9 @@ def _policy_acquire(ckey: str, policy: str, tag: str) -> dict:
             prev["cancel"].set()
             log(f"  [{tag}] 发送策略 interrupt：掐断在途 {ckey[:8]}")
             prev["done"].wait(_POLICY_STOP_S)
-    rec = {"cancel": threading.Event(), "done": threading.Event()}
+    rec = {"cancel": threading.Event(), "done": threading.Event(), "q": question}
+    if policy == "interrupt" and prev is not None:
+        rec["merge_q"] = prev.get("q", "")
     with _INFLIGHT_LOCK:
         _INFLIGHT[ckey] = rec
         if len(_INFLIGHT) > 256:
@@ -4919,7 +5149,14 @@ class Handler(BaseHTTPRequestHandler):
                     # 让引擎尽早停生成；wait 让新请求先排队），再把"我"登记在途。
                     policy = routing_send_policy(data)
                     if policy:
-                        infl = _policy_acquire(ckey, policy, tag)
+                        infl = _policy_acquire(ckey, policy, tag,
+                                               _last_user_question(msgs))
+                        # 3.39 打断=旧问并入新消息尾部，两条参考着完成；
+                        # 只动尾部最后一条 user，头部字节与前缀缓存不受影响。
+                        mq = infl.pop("merge_q", "")
+                        if mq and INTERRUPT_MERGE and _interrupt_merge(data, mq):
+                            log(f"  [{tag}] 发送策略 interrupt：旧问并入新消息尾部"
+                                f"（{len(mq)} 字），两条参考着完成")
                     snapshot = json.dumps(data, ensure_ascii=False, sort_keys=True)
                     before, after = transform(data, tag)
                     # 实况：压缩后实际发给任务模型的正文/工具/合计（R21）
@@ -4990,6 +5227,8 @@ class Handler(BaseHTTPRequestHandler):
                 log("transform failed, forwarding original:\n" + traceback.format_exc())
             # 实测对账：旁观转发响应里的 usage.prompt_tokens，回来挂到会话实况
             sink: dict = {}
+            if DUMP_DIR and ckey:
+                _dump_outbound(ckey, body)
             try:
                 self._forward("POST", self.path, body, sink if ckey else None,
                               route=route,

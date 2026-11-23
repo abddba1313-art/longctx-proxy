@@ -23,7 +23,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='longctx-proxy-gui-5.1.0',
+    name='longctx-proxy-gui-5.1.2',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

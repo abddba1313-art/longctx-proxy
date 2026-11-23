@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parent
 
 
 def main(argv: list[str]) -> int:
-    name = argv[1] if len(argv) > 1 else "longctx-proxy-gui-5.1.0"
+    name = argv[1] if len(argv) > 1 else "longctx-proxy-gui-5.1.2"
     r = subprocess.run([sys.executable, str(ROOT / "test_v2_units.py")],
                        cwd=ROOT, capture_output=True, text=True,
                        encoding="utf-8", errors="replace")

@@ -6,7 +6,7 @@
 
 它放在你的聊天客户端（Cherry Studio，或任何 OpenAI 兼容应用）和任意 LLM API 之间，把长对话压缩到模型窗口装得下的长度——**同时不打碎前缀 / KV 缓存**，并且**持续测量模型还记得多少**。
 
-GUI 5.1.0 · 代理 3.36 · Python 3.10+ · 以 Windows 为主 · Apache-2.0
+GUI 5.1.2 · 代理 3.41 · Python 3.10+ · 以 Windows 为主 · Apache-2.0
 
 ---
 
